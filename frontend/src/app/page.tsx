@@ -1,5 +1,5 @@
-import { KanbanBoard } from "@/components/KanbanBoard";
+import { AuthWrapper } from "@/components/AuthWrapper";
 
 export default function Home() {
-  return <KanbanBoard />;
+  return <AuthWrapper />;
 }
