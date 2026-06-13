@@ -1,16 +1,18 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
   PointerSensor,
   useSensor,
   useSensors,
-  closestCorners,
+  closestCenter,
   type DragEndEvent,
+  type DragOverEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
+import { arrayMove } from "@dnd-kit/sortable";
 import { KanbanColumn } from "@/components/KanbanColumn";
 import { KanbanCardPreview } from "@/components/KanbanCardPreview";
 import { AISidebar } from "@/components/AISidebar";
@@ -32,6 +34,7 @@ export const KanbanBoard = ({ onLogout }: KanbanBoardProps) => {
   const [board, setBoard] = useState<BoardData | null>(null);
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const savedBoard = useRef<BoardData | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -47,22 +50,61 @@ export const KanbanBoard = ({ onLogout }: KanbanBoardProps) => {
 
   const handleDragStart = (event: DragStartEvent) => {
     setActiveCardId(event.active.id as string);
+    savedBoard.current = board;
+  };
+
+  const handleDragOver = (event: DragOverEvent) => {
+    const { active, over } = event;
+    if (!over) return;
+    const activeId = active.id as string;
+    const overId = over.id as string;
+    // Only update state for cross-column moves; SortableContext handles same-column visuals
+    setBoard((prev) => {
+      if (!prev) return prev;
+      const activeColId = prev.columns.find((c) => c.cardIds.includes(activeId))?.id;
+      const overColId =
+        prev.columns.find((c) => c.id === overId)?.id ??
+        prev.columns.find((c) => c.cardIds.includes(overId))?.id;
+      if (!activeColId || !overColId || activeColId === overColId) return prev;
+      return { ...prev, columns: moveCard(prev.columns, activeId, overId) };
+    });
   };
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     setActiveCardId(null);
-    if (!over || active.id === over.id) return;
-
+    savedBoard.current = null;
+    const activeId = active.id as string;
     setBoard((prev) => {
       if (!prev) return prev;
-      const newColumns = moveCard(prev.columns, active.id as string, over.id as string);
-      const targetCol = newColumns.find((col) => col.cardIds.includes(active.id as string));
-      if (targetCol) {
-        apiReorder(active.id as string, targetCol.id, targetCol.cardIds.indexOf(active.id as string));
+      const targetCol = prev.columns.find((col) => col.cardIds.includes(activeId));
+      if (!targetCol) return prev;
+      // Same-column reorder: apply arrayMove now that drag is committed
+      if (over && over.id !== activeId) {
+        const overId = over.id as string;
+        const activeIdx = targetCol.cardIds.indexOf(activeId);
+        const overIdx = targetCol.cardIds.indexOf(overId);
+        if (activeIdx !== -1 && overIdx !== -1 && activeIdx !== overIdx) {
+          const newCardIds = arrayMove(targetCol.cardIds, activeIdx, overIdx);
+          const newColumns = prev.columns.map((col) =>
+            col.id === targetCol.id ? { ...col, cardIds: newCardIds } : col
+          );
+          apiReorder(activeId, targetCol.id, newCardIds.indexOf(activeId));
+          return { ...prev, columns: newColumns };
+        }
       }
-      return { ...prev, columns: newColumns };
+      // Cross-column (already positioned by onDragOver) or no change — just persist
+      apiReorder(activeId, targetCol.id, targetCol.cardIds.indexOf(activeId));
+      return prev;
     });
+  };
+
+  const handleDragCancel = () => {
+    setActiveCardId(null);
+    if (savedBoard.current) {
+      setBoard(savedBoard.current);
+      savedBoard.current = null;
+    }
   };
 
   const handleRenameColumn = (columnId: string, title: string) => {
@@ -173,9 +215,11 @@ export const KanbanBoard = ({ onLogout }: KanbanBoardProps) => {
 
         <DndContext
           sensors={sensors}
-          collisionDetection={closestCorners}
+          collisionDetection={closestCenter}
           onDragStart={handleDragStart}
+          onDragOver={handleDragOver}
           onDragEnd={handleDragEnd}
+          onDragCancel={handleDragCancel}
         >
           <section className="grid gap-6 lg:grid-cols-5">
             {board.columns.map((column) => (
